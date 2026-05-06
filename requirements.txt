@@ -1,0 +1,25 @@
+# Discord Bot
+discord.py>=2.3.0,<3.0.0
+
+# LLM
+anthropic>=0.40.0
+
+# Database
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+alembic>=1.13.0
+pgvector>=0.2.5
+
+# Config
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Utils
+structlog>=24.0.0
+
+# Dev
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+ruff>=0.4.0
+mypy>=1.9.0
