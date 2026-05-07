@@ -436,19 +436,30 @@ async def akte(interaction: discord.Interaction):
             if layer:
                 perceived[fact.id] = layer.value
 
-    lines = [
-        f"{i}. {perceived.get(f.id, f.description)[:120]}"
-        for i, f in enumerate(facts, 1)
-    ]
+    await interaction.response.defer(ephemeral=True)
+
     embed = discord.Embed(
         title=f"Akte: {active_case.title}",
-        description="\n".join(lines) or "Keine Spuren.",
         color=discord.Color.dark_red(),
+    )
+    embed.add_field(
+        name="Phase",
+        value=_PHASE_LABELS.get(active_case.phase, active_case.phase),
+        inline=True,
     )
     embed.set_footer(
         text=f"Reality Score: {player.reality_score:.2f} — {_reality_label(player.reality_score)}"
     )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+    for i, fact in enumerate(facts, 1):
+        text = perceived.get(fact.id, fact.description)
+        await interaction.followup.send(f"**[{i}]** {text}", ephemeral=True)
+
+    await interaction.followup.send(
+        "Nutze `/spur <nummer>` um eine Spur zu verfolgen, `/befragen <name>` für Zeugen.",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="spur", description="Spur verfolgen")

@@ -11,6 +11,7 @@ perceived / claimed / evidence) zu diesen Facts hinzu.
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import re
@@ -108,7 +109,21 @@ def _build_fact_descriptions(data: dict) -> list[str]:
 
     dc = data.get("disappearance_circumstances", "")
     if dc:
-        descs.append(f"Verschwinden: {dc}")
+        if isinstance(dc, dict):
+            dc_str = "\n".join(f"{k}: {v}" for k, v in dc.items() if v)
+            descs.append(f"Verschwinden:\n{dc_str}")
+        elif isinstance(dc, str) and dc.startswith("{"):
+            try:
+                parsed = ast.literal_eval(dc)
+                if isinstance(parsed, dict):
+                    dc_str = "\n".join(f"{k}: {v}" for k, v in parsed.items() if v)
+                    descs.append(f"Verschwinden:\n{dc_str}")
+                else:
+                    descs.append(f"Verschwinden: {dc}")
+            except (ValueError, SyntaxError):
+                descs.append(f"Verschwinden: {dc}")
+        else:
+            descs.append(f"Verschwinden: {dc}")
 
     for lead in data.get("initial_leads", []):
         headline = lead.get("headline", "Unbekannte Spur")
