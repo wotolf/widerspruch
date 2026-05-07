@@ -137,6 +137,7 @@ def _make_llm(response_text: str) -> MagicMock:
 def _make_session() -> MagicMock:
     session = MagicMock()
     session.flush = AsyncMock()
+    session.scalar = AsyncMock(return_value=None)  # für TruthEngine max_v-Queries
     return session
 
 
@@ -161,9 +162,10 @@ class TestCaseGeneratorGenerate:
         gen = CaseGenerator(llm=_make_llm(json.dumps(SAMPLE)))
         await gen.generate(uuid4(), {}, session)
 
-        session.flush.assert_awaited_once()
-        # 1 Case + 2 NPCs + 6 Facts (verified by TestBuildFactDescriptions.test_count)
-        assert session.add.call_count == 9
+        # 1 flush für Case + 1 flush pro Fact (6) via record_truth = 7
+        assert session.flush.await_count == 7
+        # 1 Case + 2 NPCs + 6 × (Fact + FactLayer truth + FactLayer perceived) = 21
+        assert session.add.call_count == 21
 
     async def test_invalid_json_raises(self):
         gen = CaseGenerator(llm=_make_llm("Das ist kein JSON."))

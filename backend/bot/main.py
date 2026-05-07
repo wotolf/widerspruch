@@ -4,9 +4,11 @@ Widerspruch Discord Bot — Entry Point.
 Startet den Bot und registriert die Slash-Commands.
 """
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import discord
@@ -19,8 +21,13 @@ import structlog
 
 from backend.config import settings
 from backend.core.case_generator import CaseGenerationError, CaseGenerator
+from backend.core.llm import LLMClient
+from backend.core.reality import DRIFT_THRESHOLD, corruption_intensity
+from backend.core.truth_engine import TruthEngine
 from backend.db import get_session, init_db
-from backend.db.models import Case, Player, PlayerNote, PlayerProfile
+from backend.db.models import Case, Fact, FactLayer, NPC, Player, PlayerNote, PlayerProfile
+
+_PROMPT_DIR = Path(__file__).parent.parent / "prompts"
 
 _ONBOARDING_TIMEOUT = 300  # Sekunden bis Abbruch (5 Minuten)
 
@@ -375,7 +382,227 @@ async def begin(interaction: discord.Interaction):
         return
 
     log.info("case_generation_done", discord_id=discord_id)
-    await interaction.followup.send("Deine Akte ist bereit. Nutze `/case`.", ephemeral=True)
+    await interaction.followup.send(
+        "Ermittlungsakte angelegt. Verfügbare Befehle:\n"
+        "`/akte` — Übersicht aller Spuren\n"
+        "`/spur <nr>` — Spur verfolgen\n"
+        "`/befragen <name>` — Zeugen befragen\n\n"
+        "Viel Erfolg, Ermittler.",
+        ephemeral=True,
+    )
+
+
+def _reality_label(score: float) -> str:
+    if score >= 0.9:
+        return "Realität stabil"
+    if score >= 0.7:
+        return "Leichte Unschärfen"
+    return "Realität instabil"
+
+
+@bot.tree.command(name="akte", description="Übersicht aller Spuren des aktiven Falls")
+async def akte(interaction: discord.Interaction):
+    async with get_session() as session:
+        player = await session.scalar(
+            select(Player).where(Player.discord_id == str(interaction.user.id))
+        )
+        if player is None:
+            await interaction.response.send_message(
+                "Kein Profil gefunden. Starte mit `/start`.", ephemeral=True
+            )
+            return
+
+        active_case = await session.scalar(
+            select(Case)
+            .where(Case.player_id == player.id, Case.phase != "closed")
+            .order_by(Case.started_at.desc())
+        )
+        if active_case is None:
+            await interaction.response.send_message(
+                "Du hast keinen aktiven Fall. Starte mit `/begin`.", ephemeral=True
+            )
+            return
+
+        facts = list(await session.scalars(
+            select(Fact).where(Fact.case_id == active_case.id).order_by(Fact.created_at)
+        ))
+        perceived: dict = {}
+        for fact in facts:
+            layer = await session.scalar(
+                select(FactLayer)
+                .where(FactLayer.fact_id == fact.id, FactLayer.layer_type == "perceived")
+                .order_by(FactLayer.version.desc())
+            )
+            if layer:
+                perceived[fact.id] = layer.value
+
+    lines = [
+        f"{i}. {perceived.get(f.id, f.description)[:120]}"
+        for i, f in enumerate(facts, 1)
+    ]
+    embed = discord.Embed(
+        title=f"Akte: {active_case.title}",
+        description="\n".join(lines) or "Keine Spuren.",
+        color=discord.Color.dark_red(),
+    )
+    embed.set_footer(
+        text=f"Reality Score: {player.reality_score:.2f} — {_reality_label(player.reality_score)}"
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="spur", description="Spur verfolgen")
+@app_commands.describe(nummer="Spurennummer aus /akte")
+async def spur(interaction: discord.Interaction, nummer: int):
+    new_score: float
+
+    async with get_session() as session:
+        player = await session.scalar(
+            select(Player).where(Player.discord_id == str(interaction.user.id))
+        )
+        if player is None:
+            await interaction.response.send_message(
+                "Kein Profil gefunden. Starte mit `/start`.", ephemeral=True
+            )
+            return
+
+        active_case = await session.scalar(
+            select(Case)
+            .where(Case.player_id == player.id, Case.phase != "closed")
+            .order_by(Case.started_at.desc())
+        )
+        if active_case is None:
+            await interaction.response.send_message(
+                "Du hast keinen aktiven Fall. Starte mit `/begin`.", ephemeral=True
+            )
+            return
+
+        facts = list(await session.scalars(
+            select(Fact).where(Fact.case_id == active_case.id).order_by(Fact.created_at)
+        ))
+        if nummer < 1 or nummer > len(facts):
+            await interaction.response.send_message(
+                f"Ungültige Spurennummer. Nutze `/akte` für die Übersicht.", ephemeral=True
+            )
+            return
+
+        fact = facts[nummer - 1]
+        layer = await session.scalar(
+            select(FactLayer)
+            .where(FactLayer.fact_id == fact.id, FactLayer.layer_type == "perceived")
+            .order_by(FactLayer.version.desc())
+        )
+        text = layer.value if layer else fact.description
+
+        truth_engine = TruthEngine(db_session=session)
+        new_score = await truth_engine.adjust_reality_score(player.id, -0.02)
+        if new_score < DRIFT_THRESHOLD:
+            await truth_engine.apply_corruption(player.id, corruption_intensity(new_score))
+
+    embed = discord.Embed(
+        title=f"Spur {nummer}",
+        description=text,
+        color=discord.Color.dark_red(),
+    )
+    embed.set_footer(text=f"Reality Score: {new_score:.2f} — {_reality_label(new_score)}")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="befragen", description="Zeugen befragen")
+@app_commands.describe(name="Name des Zeugen")
+async def befragen(interaction: discord.Interaction, name: str):
+    testimony: str
+    npc_found: NPC
+
+    async with get_session() as session:
+        player = await session.scalar(
+            select(Player).where(Player.discord_id == str(interaction.user.id))
+        )
+        if player is None:
+            await interaction.response.send_message(
+                "Kein Profil gefunden. Starte mit `/start`.", ephemeral=True
+            )
+            return
+
+        active_case = await session.scalar(
+            select(Case)
+            .where(Case.player_id == player.id, Case.phase != "closed")
+            .order_by(Case.started_at.desc())
+        )
+        if active_case is None:
+            await interaction.response.send_message(
+                "Du hast keinen aktiven Fall. Starte mit `/begin`.", ephemeral=True
+            )
+            return
+
+        npcs = list(await session.scalars(
+            select(NPC).where(NPC.case_id == active_case.id)
+        ))
+        npc_found = next((n for n in npcs if name.lower() in n.name.lower()), None)
+        if npc_found is None:
+            await interaction.response.send_message(
+                f"Kein Zeuge namens '{name}' bekannt.", ephemeral=True
+            )
+            return
+
+        existing = await session.scalar(
+            select(FactLayer)
+            .join(Fact, FactLayer.fact_id == Fact.id)
+            .where(
+                Fact.case_id == active_case.id,
+                FactLayer.layer_type == "claimed",
+                FactLayer.modified_by == f"npc:{npc_found.name}",
+            )
+            .order_by(FactLayer.modified_at.desc())
+        )
+
+        if existing:
+            testimony = existing.value
+        else:
+            await interaction.response.defer(ephemeral=True)
+
+            npc_prompt = (_PROMPT_DIR / "npc_witness.md").read_text("utf-8")
+            npc_prompt = (npc_prompt
+                .replace("{{ name }}", npc_found.name)
+                .replace("{{ relationship }}", npc_found.relationship_to_missing or "unbekannt")
+                .replace("{{ personality_brief }}", npc_found.personality.get("brief", ""))
+                .replace("{{ knowledge }}", json.dumps(npc_found.knowledge, ensure_ascii=False))
+                .replace("{{ memory_snippets }}", "Erste Befragung."))
+
+            response = await asyncio.to_thread(
+                LLMClient().complete,
+                system=npc_prompt,
+                user="Der Ermittler fragt nach dem Vermisstenfall.",
+                max_tokens=512,
+                temperature=0.8,
+            )
+            testimony = response.text.strip()
+
+            first_fact = await session.scalar(
+                select(Fact).where(Fact.case_id == active_case.id)
+                .order_by(Fact.created_at).limit(1)
+            )
+            truth_engine = TruthEngine(db_session=session)
+            await truth_engine.record_claim(
+                fact_id=first_fact.id, value=testimony, npc_name=npc_found.name
+            )
+
+        # Reality-Score senken (eigene Session da die obige ggf. schon committed hat)
+        async with get_session() as s2:
+            te2 = TruthEngine(db_session=s2)
+            new_score = await te2.adjust_reality_score(player.id, -0.01)
+
+    embed = discord.Embed(
+        title=npc_found.name,
+        description=testimony,
+        color=discord.Color.greyple(),
+    )
+    embed.set_footer(text=npc_found.relationship_to_missing or "")
+
+    if existing:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    else:
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 def main():

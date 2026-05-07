@@ -23,7 +23,8 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.llm import LLMClient
-from backend.db.models import Case, Fact, NPC
+from backend.core.truth_engine import TruthEngine
+from backend.db.models import Case, NPC
 
 log = structlog.get_logger()
 
@@ -195,21 +196,19 @@ class CaseGenerator:
                 created_at=now,
             ))
 
-        # --- Facts ---
-        for desc in _build_fact_descriptions(data):
-            session.add(Fact(
-                id=uuid4(),
-                case_id=case.id,
-                description=desc,
-                created_at=now,
-            ))
+        # --- Facts + Layer (truth + perceived) ---
+        truth_engine = TruthEngine(db_session=session, llm=self.llm)
+        descs = _build_fact_descriptions(data)
+        for desc in descs:
+            fact = await truth_engine.record_truth(case_id=case.id, description=desc, value=desc)
+            await truth_engine.record_perception(fact_id=fact.id, value=desc, source="system")
 
         log.info(
             "case_generation_persisted",
             case_id=str(case.id),
             title=data["title"],
             npc_count=len(data["npcs"]),
-            fact_count=len(_build_fact_descriptions(data)),
+            fact_count=len(descs),
         )
 
         return GeneratedCase(

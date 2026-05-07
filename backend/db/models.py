@@ -113,6 +113,20 @@ class Fact(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
 
 
-# TODO Phase 2: FactLayer, NPCMemory
+class FactLayer(Base):
+    __tablename__ = "fact_layers"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    fact_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("facts.id", ondelete="CASCADE"),
+    )
+    layer_type: Mapped[str]  # 'truth' | 'perceived' | 'claimed' | 'evidence'
+    value: Mapped[str]
+    version: Mapped[int] = mapped_column(default=1)
+    modified_by: Mapped[str] = mapped_column(default="system")
+    modified_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+
+
 # TODO Phase 3: ScheduledThreat
 # TODO Phase 4: TimelineEvent
