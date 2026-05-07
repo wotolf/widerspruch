@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, ForeignKey, Text
+from sqlalchemy import TIMESTAMP, CheckConstraint, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -25,10 +25,10 @@ class Player(Base):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
     discord_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    onboarded_at: Mapped[datetime | None]
+    onboarded_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     reality_score: Mapped[float] = mapped_column(default=1.0)
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
-    created_at: Mapped[datetime]
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
 
     profile: Mapped["PlayerProfile"] = relationship(back_populates="player", uselist=False)
     cases: Mapped[list["Case"]] = relationship(back_populates="player")
@@ -67,12 +67,52 @@ class Case(Base):
         ForeignKey("players.id", ondelete="CASCADE"),
     )
     title: Mapped[str]
-    started_at: Mapped[datetime]
+    started_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
     phase: Mapped[str] = mapped_column(default="opening")
 
     player: Mapped[Player] = relationship(back_populates="cases")
 
 
-# TODO Phase 2: Fact, FactLayer, NPC, NPCMemory
+class PlayerNote(Base):
+    __tablename__ = "player_notes"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    case_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("cases.id", ondelete="CASCADE"),
+    )
+    text: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+
+
+class NPC(Base):
+    __tablename__ = "npcs"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    case_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("cases.id", ondelete="CASCADE"),
+    )
+    name: Mapped[str]
+    description: Mapped[str | None]
+    personality: Mapped[dict] = mapped_column(JSONB, default=dict)
+    knowledge: Mapped[dict] = mapped_column(JSONB, default=dict)
+    relationship_to_missing: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+
+
+class Fact(Base):
+    __tablename__ = "facts"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    case_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("cases.id", ondelete="CASCADE"),
+    )
+    description: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+
+
+# TODO Phase 2: FactLayer, NPCMemory
 # TODO Phase 3: ScheduledThreat
 # TODO Phase 4: TimelineEvent
