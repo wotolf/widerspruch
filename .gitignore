@@ -52,3 +52,4 @@ build/
 # Pytest
 .coverage
 htmlcov/
+.env.save
