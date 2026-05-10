@@ -53,3 +53,4 @@ build/
 .coverage
 htmlcov/
 .env.save
+infra/terraform/terraform.tfvars
