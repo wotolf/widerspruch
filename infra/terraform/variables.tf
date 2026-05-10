@@ -7,11 +7,17 @@ variable "aws_region" {
 variable "environment" {
   type        = string
   default     = "dev"
-  description = "Deployment-Umgebung"
+  description = "Deployment-Umgebung (dev / prod)"
 }
 
 variable "project_name" {
   type        = string
   default     = "widerspruch"
-  description = "Wird als Prefix für Resource-Namen genutzt"
+  description = "Prefix für alle Resource-Namen"
+}
+
+variable "db_password" {
+  type        = string
+  sensitive   = true
+  description = "Passwort für die RDS-Instanz — via TF_VAR_db_password oder terraform.tfvars setzen"
 }
