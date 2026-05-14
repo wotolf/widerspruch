@@ -1,0 +1,140 @@
+Run tests: .venv/bin/pytest tests/ -q
+
+---
+
+## What the project is
+
+A single-player Discord ARG where the player investigates their own disappearance.
+An LLM generates a personalised missing-person case. Facts exist in four parallel
+layers (truth / perceived / claimed / evidence). The player's "reality_score" starts
+at 1.0 and drifts down with every action. Below 0.7 an LLM silently corrupts the
+perceived/claimed layers so the case narrative starts gaslighting the player.
+Three parallel timelines (investigator / shadow_a / shadow_b) run alongside.
+A Journal mechanic lets the player pin a snapshot of a fact and later compare it
+to the current (possibly corrupted) version with a word-level diff.
+
+---
+
+## Tech stack
+
+Python 3.14, discord.py, Anthropic SDK (sync, wrapped in asyncio.to_thread),
+SQLAlchemy 2 + asyncpg, Alembic (pure op.execute SQL, IF NOT EXISTS pattern),
+Postgres 16 + pgvector, structlog, pytest (async tests via pytest-asyncio)
+
+---
+
+## Known hard constraints — do not break these
+
+- Anthropic Haiku 4.5 does NOT accept `temperature` in messages.create() — it is
+  stripped in llm.py before the API call (kept in method signature for compat).
+- All slow Discord command handlers must call `await interaction.response.defer(ephemeral=True)`
+  as their FIRST line, then use `interaction.followup.send()` for all responses.
+- All Alembic migrations use op.execute() with IF NOT EXISTS / ADD COLUMN IF NOT EXISTS.
+  No sa.inspect(), no op.add_column() — asyncpg is incompatible with introspection.
+- LLM responses may be fenced in ```json ... ``` — always strip via parse_llm_json()
+  in backend/core/json_utils.py, never re-implement locally.
+- Session pattern: `async with get_session() as session` — commits on exit, rolls
+  back on exception. Never open a second session for work that belongs in the first.
+
+---
+
+## Implemented bot commands
+
+/ping              — health check, no defer needed
+/start             — DM-based onboarding (7 questions), persists Player + PlayerProfile
+/begin             — generates case via CaseGenerator (LLM), seeds Facts + FactLayers,
+                     deferred, broad except Exception logs full traceback
+/case              — shows active case embed + last 5 notes
+/akte              — numbered list of Facts showing current perceived layer + Reality Score
+/spur <nr>         — shows perceived layer for fact #nr, drops reality_score -0.02,
+                     triggers corruption if below DRIFT_THRESHOLD (0.7), runs TimelineScorer
+/befragen <name>   — NPC witness query, creates claimed FactLayer, drops reality_score -0.01,
+                     runs TimelineScorer
+/note <text> [spur=<nr>]  — saves PlayerNote, optionally pins snapshot of perceived layer
+                            for later comparison, runs TimelineScorer
+/journal           — lists all notes with timestamp + ⚠️ marker if snapshot drifted
+/vergleichen <nr>  — three-panel diff: note text | snapshot | current perceived layer,
+                     word-level diff via difflib.ndiff in a ```diff block
+/admin_seed_timeline <case_uuid>  — [admin] seeds investigator/shadow_a/shadow_b timelines
+/admin_force_phase <phase>        — [admin] sets case phase directly via apply_transition
+
+---
+
+## Core module map
+
+backend/core/llm.py              — LLMClient(model), .complete(system, user, max_tokens),
+                                   timeout=60s, temperature NOT forwarded to API
+backend/core/json_utils.py       — parse_llm_json(text, error_class) — fence-stripping JSON
+backend/core/reality.py          — DRIFT_THRESHOLD=0.7, corruption_intensity(score),
+                                   apply_action_drift(score, action_type)
+backend/core/truth_engine.py     — TruthEngine(db, llm): record_truth, record_perception,
+                                   record_claim, record_evidence, get_player_visible_layers,
+                                   adjust_reality_score, apply_corruption (LLM-based)
+backend/core/case_generator.py   — CaseGenerator.generate() → LLM → persists Case, NPCs,
+                                   Facts+FactLayers via TruthEngine
+backend/core/timeline_seeder.py  — TimelineSeeder.seed_case() → LLM → 3×8+ TimelineEvents,
+                                   max_tokens=8000
+backend/core/timeline_scorer.py  — TimelineScorer.score_action(case_id, action_type, context,
+                                   session) — pure keyword overlap, no LLM, updates top-2
+                                   TimelineEvent.support_score
+                                   Deltas: spur +0.03, befragen +0.05, note +0.02
+backend/core/case_lifecycle.py   — evaluate_transition(case, action_count, unique_npcs,
+                                   reality_score) → str|None (pure function)
+                                   apply_transition(db, case, new_phase, reason) → async
+
+---
+
+## Phase transition thresholds (case_lifecycle.py)
+
+opening      → investigation : action_count >= 3
+investigation → first_reveal  : action_count >= 10 AND unique_npcs >= 2
+first_reveal → second_reveal  : action_count >= 20 AND reality_score <= 0.60
+second_reveal → finale        : action_count >= 30 AND reality_score <= 0.30
+
+action_count = note_count + befragen_count + spur_count
+  note_count     = COUNT(PlayerNote WHERE case_id)
+  befragen_count = COUNT(FactLayer WHERE layer_type="claimed" for case's facts)
+  spur_count     = COUNT(FactLayer WHERE layer_type="perceived" AND version > 1)
+unique_npcs    = COUNT(DISTINCT FactLayer.modified_by WHERE layer_type="claimed")
+
+Lifecycle is checked at end of /note, /spur, /befragen via _check_lifecycle(session, case, player).
+On transition: apply_transition writes case_phase_history row + plain-text followup message to player.
+
+---
+
+## DB models (backend/db/models.py)
+
+Player            — id, discord_id, onboarded_at, reality_score, settings, created_at
+PlayerProfile     — player_id (PK/FK), city, neighborhood, routine, close_people, fears,
+                    locations, raw_answers, personalization_intensity
+Case              — id, player_id, title, started_at, phase
+CasePhaseHistory  — id, case_id, from_phase, to_phase, reason, transitioned_at
+PlayerNote        — id, case_id, text, created_at, fact_id (nullable FK), snapshot_value (nullable)
+NPC               — id, case_id, name, description, personality, knowledge, relationship_to_missing
+Fact              — id, case_id, description, created_at
+FactLayer         — id, fact_id, layer_type, value, version, modified_by, modified_at
+TimelineEvent     — id, case_id, timeline, occurred_at, wall_clock_slot, description,
+                    visible_to_player, revealed_at, support_score, evidence_links
+
+---
+
+## Alembic migration chain
+
+a1b2c3d4e5f6  — full initial schema (all base tables + timeline_events)
+b2c3d4e5f6a7  — player_notes: ADD COLUMN fact_id + snapshot_value
+c3d4e5f6a7b8  — CREATE TABLE case_phase_history
+
+---
+
+## Test suite (147 tests, all pass)
+
+tests/test_reality.py          — reality score helpers
+tests/test_truth_engine.py     — TruthEngine unit tests (DB mocked)
+tests/test_case_generator.py   — CaseGenerator (LLM mocked)
+tests/test_timeline_seeder.py  — TimelineSeeder (LLM mocked)
+tests/test_timeline_scorer.py  — TimelineScorer (12 tests, DB mocked)
+tests/test_journal.py          — /note spur linking + /vergleichen diff logic
+tests/test_case_lifecycle.py   — evaluate_transition (all paths) + apply_transition
+tests/test_onboarding.py       — /start onboarding flow
+
+All tests use MagicMock/AsyncMock for DB sessions — no real DB needed for unit tests.
