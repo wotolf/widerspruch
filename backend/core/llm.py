@@ -29,7 +29,10 @@ class LLMClient:
 
     def __init__(self, model: str | None = None):
         self.model = model or settings.anthropic_model
-        self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        self._client = anthropic.Anthropic(
+            api_key=settings.anthropic_api_key,
+            timeout=60.0,
+        )
 
     def complete(
         self,
@@ -48,7 +51,6 @@ class LLMClient:
         message = self._client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
-            temperature=temperature,
             system=system,
             messages=[{"role": "user", "content": user}],
         )

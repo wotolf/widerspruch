@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     aws_secret_access_key: str | None = None
     s3_evidence_bucket: str | None = None
 
+    # Admin
+    admin_discord_ids: list[str] = []
+
     # App
     log_level: str = "INFO"
     environment: str = "development"

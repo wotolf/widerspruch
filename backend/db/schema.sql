@@ -147,11 +147,15 @@ CREATE TABLE IF NOT EXISTS timeline_events (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
     timeline TEXT NOT NULL
-        CHECK (timeline IN ('investigator', 'shadow', 'unknown')),
+        CHECK (timeline IN ('investigator', 'shadow_a', 'shadow_b')),
     occurred_at TIMESTAMPTZ NOT NULL,
+    wall_clock_slot TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL,
     visible_to_player BOOLEAN NOT NULL DEFAULT FALSE,
-    revealed_at TIMESTAMPTZ
+    revealed_at TIMESTAMPTZ,
+    support_score FLOAT NOT NULL DEFAULT 0.5,
+    evidence_links JSONB NOT NULL DEFAULT '[]'::jsonb
 );
 
 CREATE INDEX idx_timeline_events_case_id ON timeline_events(case_id);
+CREATE INDEX idx_timeline_events_timeline ON timeline_events(case_id, timeline);

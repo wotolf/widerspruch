@@ -71,6 +71,25 @@ class Case(Base):
     phase: Mapped[str] = mapped_column(default="opening")
 
     player: Mapped[Player] = relationship(back_populates="cases")
+    phase_history: Mapped[list["CasePhaseHistory"]] = relationship(
+        back_populates="case", order_by="CasePhaseHistory.transitioned_at"
+    )
+
+
+class CasePhaseHistory(Base):
+    __tablename__ = "case_phase_history"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    case_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("cases.id", ondelete="CASCADE"),
+    )
+    from_phase: Mapped[str]
+    to_phase: Mapped[str]
+    reason: Mapped[str]
+    transitioned_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+
+    case: Mapped[Case] = relationship(back_populates="phase_history")
 
 
 class PlayerNote(Base):
@@ -83,6 +102,12 @@ class PlayerNote(Base):
     )
     text: Mapped[str]
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+    fact_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("facts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    snapshot_value: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class NPC(Base):
@@ -128,5 +153,19 @@ class FactLayer(Base):
     modified_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
 
 
-# TODO Phase 3: ScheduledThreat
-# TODO Phase 4: TimelineEvent
+class TimelineEvent(Base):
+    __tablename__ = "timeline_events"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    case_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("cases.id", ondelete="CASCADE"),
+    )
+    timeline: Mapped[str]        # 'investigator' | 'shadow_a' | 'shadow_b'
+    occurred_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+    wall_clock_slot: Mapped[str]  # shared key across timelines, e.g. "Day1-22:00"
+    description: Mapped[str]
+    visible_to_player: Mapped[bool] = mapped_column(default=False)
+    revealed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    support_score: Mapped[float] = mapped_column(default=0.5)
+    evidence_links: Mapped[list] = mapped_column(JSONB, default=list)

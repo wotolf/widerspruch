@@ -14,7 +14,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +22,7 @@ from uuid import UUID, uuid4
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.json_utils import parse_llm_json
 from backend.core.llm import LLMClient
 from backend.core.truth_engine import TruthEngine
 from backend.db.models import Case, NPC
@@ -50,41 +50,7 @@ class GeneratedCase:
 
 
 def _parse_json_response(text: str) -> dict:
-    """
-    Extrahiert ein JSON-Objekt aus dem LLM-Response-Text.
-
-    Versuche in Reihenfolge:
-    1. Direkt parsen (Normalfall, da Prompt "nur JSON" verlangt)
-    2. Markdown-Code-Fences strippen, nochmal parsen
-    3. Erstes {...}-Objekt per Regex finden und parsen
-    """
-    text = text.strip()
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # Fences entfernen (LLM ignoriert manchmal die Anweisung)
-    _flags = re.MULTILINE | re.IGNORECASE
-    fence_stripped = re.sub(r"^```(?:json)?\s*", "", text, flags=_flags)
-    fence_stripped = re.sub(r"\s*```\s*$", "", fence_stripped, flags=_flags).strip()
-    try:
-        return json.loads(fence_stripped)
-    except json.JSONDecodeError:
-        pass
-
-    # Letzter Versuch: erstes vollständiges JSON-Objekt im Text finden
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
-
-    raise CaseGenerationError(
-        f"Kein valides JSON in LLM-Response (erste 300 Zeichen): {text[:300]!r}"
-    )
+    return parse_llm_json(text, CaseGenerationError)
 
 
 def _validate(data: dict) -> None:

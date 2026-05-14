@@ -110,7 +110,10 @@ resource "aws_ecs_task_definition" "bot" {
         name  = "ENVIRONMENT"
         value = "production"
       },
-    ]
+      {
+        name  = "ADMIN_DISCORD_IDS"
+        value = "[\"438390463247024129\"]"
+      },]
 
     secrets = [
       {
